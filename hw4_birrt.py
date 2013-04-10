@@ -58,6 +58,7 @@ class RoboHandler:
     self.problem_init()
 
     self.run_problem_birrt()
+    time.sleep(100)
 
 
 
@@ -287,29 +288,46 @@ class RoboHandler:
 
     # initialization
     parent_dict = dict()  # dictionary (representing the tree)
+    goal_dict = dict()           
     nearest_state = ini_state
     parent_dict[tuple(ini_state)] = 'root' # add initial state into the dictionary
-
+    
+    for g in range (len(goals_verified)):     # create virtual node for all goals
+      goal_dict[tuple(goals_verified[g])] = 'root'
+      
+      Ta=parent_dict
+      Tb=goal_dict
+      
+    i=1 # counter to keep track of swap btw goal tree and ini_strt tree, when i is odd it is ini_strt tree else goal tree
     while (1):
-      # choose a target state
-      target = self.choose_target(parent_dict.keys(), goals_verified)
-
+       # choose a target state
+      target = self.choose_target(goals)
+      #extend Tree to target
       # choose the nearest state to the target state
-      nearest = self.find_nearest(parent_dict.keys(), target)
+      nearest = self.find_nearest(Ta.keys(), target)
+      
 
       # extend one unit from the nearest state towards the target state
-      [milestone, finish, collision] = self.unit_extend(nearest, target)
+      [qnew, finish, collision] = self.unit_extend(nearest, target)
+
       if (finish == -1): continue # redundant arget
       if (collision == True): continue # extension causes collision
-      parent_dict[tuple(milestone)] = nearest
-      nearest = milestone
+      Ta[tuple(qnew)] = nearest
+      target = qnew
+
 
       # check whether any goal reached after extension
-      [cmpresult, goal_index] = self.compare_against_goals(milestone, goals_verified)
+      [cmpresult, goal_index] = self.compare_against_goals(qnew, Tb.keys())
+
       if cmpresult == 1: # a goal reached
         print "RRT: Found solution"
-        # return the trajectory
-        traj = self.return_trajectory(goals_verified, goal_index, parent_dict, milestone)
+        # return the trajectory # the chk is kept to reverse only the contact point to init_state and not contact_point to goal
+        if i%2 ==0:
+            traj = self.return_trajectory(Tb, goal_index, Ta, qnew)
+        else:
+            traj = self.return_trajectory(Ta, qnew,Tb, goal_index)
+            
+
         #print traj
         now = time.time()
         print 'The time for the search to complete:', now - start
@@ -325,21 +343,25 @@ class RoboHandler:
       # continue extenstion until target state reached
       while (finish != 1):
         # extend one unit towards target state
-        [milestone, finish, collision] = self.unit_extend(nearest, target)
+        nearest = self.find_nearest(Tb.keys(), target)
+        [qnew, finish, collision] = self.unit_extend(nearest, target)
         if (collision == True): break
-        parent_dict[tuple(milestone)] = nearest
-        nearest = list(milestone)
+        Tb[tuple(qnew)] = nearest
+        #nearest = list(qnew)
 
         # check whether any goal reached after extension
-        [cmpresult, goal_index] = self.compare_against_goals(milestone, goals_verified)
+        [cmpresult, goal] = self.compare_against_goals(qnew, Ta.keys())
         if cmpresult == 1:
           print "RRT: Found solution"
-          # return the trajectory
-          traj = self.return_trajectory(goals_verified, goal_index, parent_dict, milestone)
+          # return the trajectory # the chk is kept to reverse only the contact point to init_state and not contact_point to goal
+          if i%2 ==0:
+            traj = self.return_trajectory(Ta, goal, Tb, qnew)
+          else:
+            traj = self.return_trajectory(Tb, qnew,Ta, goal)
           #print traj
           now = time.time()
           print 'The time for the search to complete:', now - start
-          print "RRT: Shortening the path"
+          print "RRT: Shortening the path"     
           traj = self.shorten_path(traj)
           now2 = time.time()
           print 'The time for the path shortening to complete:', now2 - now
@@ -347,13 +369,26 @@ class RoboHandler:
         elif cmpresult == -1: # error
           print "RRT: Error in comparison between expanded state and goal"
           return None
+        
+      #swap dictionary  
+      tempdict=Ta
+      Ta=Tb
+      Tb=tempdict
+
+      i=i+1
+      #if i%2 ==0:
+      #  print('ta is goal')      
+      #time.sleep(2)
+      
 
   # choose a target to expand
   # do not handle redundant targets
-  def choose_target(self, parent_dict_keys, goals):
+  def choose_target(self,goals):
     prob = np.random.uniform()
     # with probability 1-PROB_GOALS, choose a random target within dof limits
+
     if (prob > PROB_GOALS):
+      
       candidate_target = []
       for i in range(len(goals[0])):
         tmp = np.random.uniform(self.ActiveDOF_Limits[0][i], self.ActiveDOF_Limits[1][i])
@@ -361,7 +396,9 @@ class RoboHandler:
       return candidate_target
     # with probability PROB_GOALS, randomly choose a goal
     else:
-      return goals[np.random.randint(0, len(goals), 1)] # using min-distance may end up stuck in local minima
+      a=np.random.randint(0, len(goals), 1)
+      print('index of goal',a) 
+      return goals.tolist()[a] # using min-distance may end up stuck in local minima
       
   # find the tree's nearest state to the target
   def find_nearest(self, parent_dict_keys, target):
@@ -374,23 +411,28 @@ class RoboHandler:
   #   finish: whether milestone meets the target, 1 -> reached target  0 -> still in extension process  -1 -> nearest and meets target or error (redundant target)
   #   collision: whether milestone causes collision
   def unit_extend(self, nearest, target):
+
     # initialization
     milestone = list(nearest)
     finish = 1
     collision = False
+
     # check whether the nearest already meets target,
     if self.compare_state(nearest, target) != 0:
       milestone = None
       finish = -1
-      return [milestone, finish]
+
+      return [milestone, finish, collision]
     # extend from nearest to target, each dimension by at most MAX_MOVE_AMOUNT
     len_target = len(target)
+
     for i in range(len_target):
       cmpresult = self.compare_value(nearest[i], target[i])
       if (cmpresult > 0): milestone[i] += MAX_MOVE_AMOUNT
       elif (cmpresult < 0): milestone[i] -= MAX_MOVE_AMOUNT
       if finish == 1:
         if self.compare_value(milestone[i], target[i]) != 0: finish = 0 # set finish to 0 if at least one dimenstion of target not met
+
     # check collision
     [objcollision, selfcollision, not_used] = self.state_validation(milestone, True, False)
     collision = objcollision or selfcollision
@@ -494,18 +536,32 @@ class RoboHandler:
     
   # return the trajectory
   def return_trajectory(self, goals, goal_index, parent_dict, milestone):
-    traj = []
-    traj.append(goals[goal_index]) # append the goal
+    traj=[]
+    traj_goal = []
+    traj_strt = []
+    traj_goal.append(goal_index) # append the goal
+    tmpgoal=goal_index
+    # expand goaltree 1
+    while (1):
+      tmpgoal2 = goals[tuple(tmpgoal)]
+      if (goals.has_key(tuple(tmpgoal2))): # check whether tmpstate2 is "root"
+        traj_goal.append(tmpgoal2)
+        tmpgoal = tmpgoal2
+      else: break
+    #expand parent_tree    
     tmpstate = milestone
-    traj.append(milestone) # append the milestone (which meets the goal) to avoid failure in dictionary key checking
+    traj_strt.append(milestone) # append the milestone (which meets the goal) to avoid failure in dictionary key checking
     # iterate until finding the root
     while (1):
       tmpstate2 = parent_dict[tuple(tmpstate)]
       if (parent_dict.has_key(tuple(tmpstate2))): # check whether tmpstate2 is "root"
-        traj.append(tmpstate2)
+        traj_strt.append(tmpstate2)
         tmpstate = tmpstate2
       else: break
-    traj.reverse() # before revers(), the trajectory is from goal to initial state
+    traj_strt.reverse() # before revers(), the trajectory is from goal to initial state
+    
+    # move from intital state to point of contact and from point of contact to goal
+    traj=traj_strt+traj_goal
     return traj
 
   # compare a state against a number of goals
@@ -520,20 +576,22 @@ class RoboHandler:
       if cmpresult == 1:
         result = 1
         goal_index = i
-        return [result, goal_index]
+        return [result, goals[goal_index]]
       elif cmpresult == -1:
         result = -1
-        return [result, goal_index]
-    return [result, goal_index]
+        return [result, goals[goal_index]]
+    return [result, goals[goal_index]]
 
   # compare whether two states are equal with a MAX_MOVE_AMOUNT/2 error tolerance
   # return 0 -> NOT equal; 1 -> equal; -1 -> error
   def compare_state(self, curr_state, goal):
+
     len_curr_state = len(curr_state)
     len_goal = len(goal)
     if len_curr_state != len_goal: return -1
     for i in range(len_curr_state):
-      if curr_state[i] >= goal[i]+MAX_MOVE_AMOUNT/2 or curr_state[i] < goal[i]-MAX_MOVE_AMOUNT/2: return 0
+      if curr_state[i] >= goal[i]+MAX_MOVE_AMOUNT/2 or curr_state[i] < goal[i]-MAX_MOVE_AMOUNT/2:
+        return 0
     return 1
 
   # compare whether two values are equal with a MAX_MOVE_AMOUNT/2 error tolerance
