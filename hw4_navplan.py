@@ -52,15 +52,19 @@ MAX_MOVE_AMOUNT = 0.1
 
 WHEEL_RADIUS = 0.20
 ROBOT_LENGTH = 0.25
-TIMESTEP_AMOUNT = 0.02
+TIMESTEP_AMOUNT = 1 #0.02
+
+#constant for max distance to move any joint in a discrete step
+TRANS_PER_DIR = 0.1
 
 
 class RoboHandler:
   def __init__(self):
+    self.E=1
     self.openrave_init()
     self.problem_init()
 
-    #self.run_problem_navsearch()
+    self.run_problem_navsearch()
     #self.run_problem_nav_and_grasp()
 
 
@@ -150,6 +154,11 @@ class RoboHandler:
     
     with self.env:
       self.robot.SetTransform(self.start_trans)
+      
+    # test to see where the goals are
+    print self.start_trans
+    #self.init_transition_transforms()
+    #self.run_basetranforms(goal_trans)
 
     # get the trajectory!
     base_transforms = self.astar_to_transform(goal_trans)
@@ -262,8 +271,119 @@ class RoboHandler:
   # Thus, you should use self.full_transforms when returning!
   #######################################################
   def astar_to_transform(self, goal_transforms):
+    # test for a star using HW2
+    self.run_difficult_problem()
     return None
+  
+  def run_difficult_problem(self):
+    self.robot.GetController().Reset()
 
+    with self.env:
+      self.robot.SetDOFValues(self.grasps[0][self.graspindices['igrasppreshape']], self.manip.GetGripperIndices()) # move to preshape
+    with self.env:
+      self.robot.SetActiveDOFValues([5.459, -0.981,  -1.113,  1.473 , -1.124, -1.332,  1.856])    
+
+    self.init_transition_arrays()
+    #goals = self.get_goal_dofs(7,1)
+    goals = np.array([[ 0.93422058, -1.10221021, -0.2       ,  2.27275587, -0.22977831, -1.09393251, -2.23921746],
+       [ 1.38238176, -1.05017481,  0.        ,  1.26568204,  0.15001448,  1.32813949, -0.06022621],
+       [ 1.16466262, -1.02175153, -0.3       ,  1.26568204, -2.62343746, -1.43813577, -0.37988181],
+       [ 3.45957137, -0.48619817,  0.        ,  2.0702298 , -1.12033301, -1.33241556,  1.85646563],
+       [ 1.65311863, -1.17157253,  0.4       ,  2.18692683, -2.38248898,  0.73272595, -0.23680544],
+       [ 1.59512823, -1.07309638,  0.5       ,  2.26315055,  0.57257592, -1.15576369, -0.30723627],
+       [ 1.67038884, -1.16082512,  0.4       ,  2.05339849, -2.0205527 ,  0.54970211, -0.4386743 ]])
+
+    traj = self.search_to_goal_astar(goals)
+
+    with self.env:
+      self.robot.SetActiveDOFValues([5.459, -0.981,  -1.113,  1.473 , -1.124, -1.332,  1.856])
+    
+    self.robot.GetController().SetPath(traj)
+    self.robot.WaitForController(0)
+    self.taskmanip.CloseFingers()
+  
+  #######################################################
+  # A* SEARCH
+  # find a path from the current configuration to ANY goal in goals
+  # goals: list of possible goal configurations
+  # RETURN: a trajectory to the goal
+  #######################################################
+  def search_to_goal_astar(self,goals): 
+    print('Running Astar')
+    initial = self.robot.GetActiveDOFValues()
+    goals=np.ndarray.round(goals,1)
+    #goals = goals.round(1)
+    initial=np.ndarray.round(initial,1)
+    #initial = initial.round(1)
+
+    goal = set()
+    for element in goals:
+        goal.add(self.convert_for_dict_withround(element))
+    vco = set()
+
+
+    f_score=dict()
+    #g_score=dict()
+ 
+ 
+    Q = Queue.PriorityQueue() #openset
+    path = dict()
+    ini_c=self.config_to_priorityqueue_tuple(0,initial,goals)
+    print ini_c
+    Q.put(ini_c)
+    f_score[ini_c[1]]=ini_c[0]
+
+
+    while not Q.empty():
+      parent=Q.get()
+      current=self.convert_from_dictkey_withround(parent[1])
+
+      g_score=parent[0]-self.E*self.min_manhattan_dist_to_goals(current,goals)
+      if parent[1] in goal:
+        print('success')
+        point=self.creat_traj_points(tuple(current),path)
+        return self.points_to_traj(point)
+      
+      if parent[1] not in vco:
+        vco.add(parent[1])
+        action=self.transition_config(current)
+        for neighbor in action:
+          with self.env:
+            self.robot.SetActiveDOFValues(neighbor)
+            if (self.env.CheckCollision(self.robot) or self.robot.CheckSelfCollision() or self.check_dof_limits(neighbor)):
+              continue
+   
+            if self.convert_for_dict_withround(neighbor) not in vco:
+              temp=self.config_to_priorityqueue_tuple(g_score+TRANS_PER_DIR,neighbor,goals)
+              Q.put(temp)
+              if self.convert_for_dict_withround(neighbor) not in f_score.keys() or f_score[self.convert_for_dict_withround(neighbor)] > temp[0]:
+                f_score[self.convert_for_dict_withround(neighbor)] = temp[0]
+                path[tuple(neighbor)] = tuple(current)      
+    print('failure')      
+    return
+  
+  
+  #check limits
+  def check_dof_limits(self, config):
+    upper,lower = self.robot.GetDOFLimits(self.manip.GetArmIndices())
+    flag=True
+    for i in range(len(upper)):
+      if config[i]>upper[i]:
+        flag=False
+      if config[i]<lower[i]:
+        flag=False
+    return flag
+  
+  
+  def creat_traj_points(self, child,dictin):
+    point=[]
+    i=0
+    point.append(child)
+    while dictin.get(point[i],'none')  != 'none':
+      point.append(dictin[point[i]])
+      i=i+1
+    point=point[::-1]
+    return point
 
   #######################################################
   # Check if the config is close enough to goal
@@ -287,7 +407,49 @@ class RoboHandler:
   def init_transition_transforms(self):
     self.transition_transforms = []
     self.full_transforms = []
+    
+    # get initial x, y, thera
+    # x: param[0], y: param[1], thera: param[2]
+    cur_param = self.transform_to_params(self.start_trans)
 
+    # expand tree using w1 and w2 combination
+    # combination 1 : w1 = 1, w2 = 1
+    w_1 = 1
+    w_2 = 1    
+    new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP_AMOUNT, cur_param)
+    self.transition_transforms.append(self.params_to_transform(new_param)) # convert to tranform and add it to list
+      
+    # combination 2 : w1 = -1, w2 = 1
+    w_1 = -1
+    w_2 = 1    
+    new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP_AMOUNT, cur_param)
+    self.transition_transforms.append(self.params_to_transform(new_param)) # convert to transform and add it to list    
+
+    # combination 3 : w1 = 1, w2 = -1
+    w_1 = 1
+    w_2 = -1    
+    new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP_AMOUNT, cur_param)
+    self.transition_transforms.append(self.params_to_transform(new_param)) # convert to transform and add it to list
+    
+    for i in range(3):
+      print self.transition_transforms[i]
+      #time.sleep(5)
+      #self.robot.SetTransform(np.dot(self.start_trans, self.transition_transforms[i]))
+
+  
+  # get x, y, thera from differential angular velocities w1 and w2
+  # input)
+  #    w1, w2: angular velocities
+  #    x,y,thera in previous time step: numpy array, x: param[0], y: param[1], thera: param[2]
+  # output)
+  #    x,y,thera in current time step: numpy array, x: param[0], y: param[1], thera: param[2]
+  def get_xythera_from_angularvel(self,w_1,w_2,time_step, prev_param):
+    thera_t = (WHEEL_RADIUS/(2*ROBOT_LENGTH))*(w_1-w_2)*time_step + prev_param[2]
+    thera_t = prev_param[2]-thera_t
+    x_t = (WHEEL_RADIUS/2)*(-w_1*np.sin(thera_t)-w_2*np.sin(thera_t))*time_step + prev_param[0]
+    y_t = (WHEEL_RADIUS/2)*(w_1*np.cos(thera_t)+w_2*np.cos(thera_t))*time_step + prev_param[1]
+    return np.array([prev_param[0]-x_t, prev_param[1]-y_t, thera_t])
+    
   
   #TODO
   #######################################################
@@ -296,7 +458,17 @@ class RoboHandler:
   #######################################################
   def controls_to_transforms(self,trans,controls,timestep_amount):
     return None
-    
+  
+  #######################################################
+  # Initialize the movements you can apply in any direction
+  # Don't forget to use TRANS_PER_DIR - the max distance you
+  # can move any joint in a step (defined above)
+  #######################################################
+  def init_transition_arrays(self):
+    self.transition_arrays = []
+    self.transition_arrays=np.eye(7)*TRANS_PER_DIR
+    self.transition_arrays=np.append(self.transition_arrays,np.eye(7)*(-TRANS_PER_DIR),0)
+    return
 
   #TODO
   #######################################################
@@ -304,16 +476,23 @@ class RoboHandler:
   # transition arrays to it
   #######################################################
   def transition_config(self, config):
-    return None
 
+    new_configs = np.zeros((14,7))
+    for i in range (14):
+      new_configs[i,:]=config+ self.transition_arrays[i]
+    return new_configs
 
   #TODO
   #######################################################
   # Implement a heuristic for base navigation
   #######################################################
+  #def config_to_priorityqueue_tuple(self, dist, config, goals):
+  #  # make sure to replace the 0 with your priority queue value!
+  #  return (0.0, config.tolist())
+  
   def config_to_priorityqueue_tuple(self, dist, config, goals):
-    # make sure to replace the 0 with your priority queue value!
-    return (0.0, config.tolist())
+    priority= dist+(self.E*self.min_manhattan_dist_to_goals(config,goals))
+    return (priority,self.convert_for_dict_withround(config))
 
 
   #######################################################
@@ -368,10 +547,12 @@ class RoboHandler:
   # includes rounding
   #######################################################
   def convert_for_dict_withround(self, item):
-    return tuple(np.int_(item*100))
+    #return tuple(np.int_(item*100))
+    return tuple(np.round((item*100),1))
 
   def convert_from_dictkey_withround(self, item):
-    return np.array(item)/100.
+    #return np.array(item)/100.
+    return np.array(item)/100
 
 
   def points_to_traj(self, points):
@@ -417,7 +598,23 @@ class RoboHandler:
     return dists[min_ind_in_inds], inds[min_ind_in_inds], min_ind_in_inds
 
 
-  
+  #######################################################
+  # minimum distance from config to any goal in goals
+  # distance metric: manhattan
+  # returns the distance AND closest goal
+  #######################################################
+  def min_manhattan_dist_to_goals(self, config, goals):
+    dist_g = []
+    for g in goals:
+      dist_g .append(sum(tuple([abs(round(item1 - item2,1)) for item1, item2 in zip(config,tuple(g))])))
+    return min(dist_g)
+    
+    
+  def dist_to_goals(self, config, goals):
+    dist = math.sqrt(sum(tuple([pow(abs(item1 - item2),2) for item1, item2 in zip(config,goals)]))) 
+    return dist
+ 
+
   #######################################################
   # close the fingers when you get to the grasp position
   #######################################################
