@@ -104,15 +104,18 @@ class RoboHandler:
     self.graspindices = self.gmodel.graspindices
 
     # load ikmodel
-    #self.ikmodel = openravepy.databases.inversekinematics.InverseKinematicsModel(self.robot,iktype=openravepy.IkParameterization.Type.Transform6D)
-    #if not self.ikmodel.load():
-    #  self.ikmodel.autogenerate()
+    self.ikmodel = openravepy.databases.inversekinematics.InverseKinematicsModel(self.robot,iktype=openravepy.IkParameterization.Type.Transform6D)
+    if not self.ikmodel.load():
+      self.ikmodel.autogenerate()
 
     # create taskmanip
     self.taskmanip = openravepy.interfaces.TaskManipulation(self.robot)
   
     # move left arm out of way
     self.robot.SetDOFValues(np.array([4,2,0,-1,0,0,0]),self.robot.GetManipulator('left_wam').GetArmIndices() )
+    
+    # initialize values for jacobian
+    self.jacobian_init()
 
 
   #######################################################
@@ -235,9 +238,11 @@ class RoboHandler:
 
     with self.env:
       self.robot.SetActiveDOFValues(startconfig)
-
+    
     # get the trajectory!
     #traj = self.constrain_birrt_to_goal(goals)
+    #return;
+    time.sleep(15)
     traj = self.rrt_to_goal(goals)
 
     with self.env:
@@ -258,18 +263,132 @@ class RoboHandler:
   # RETURN: a trajectory to the goal
   #######################################################
   def constrain_birrt_to_goal(self, goals):
-    z_val_orig = self.manip.GetTransform()[2,3]
-
+    
+    # get target height z value
+    self.z_val_orig = self.manip.GetTransform()[2,3] # take z value from transform
+    print "target z_val_orig = %s" %self.z_val_orig
+    
+    # get the current arm configuration
+    cur_config = self.robot.GetActiveDOFValues()
+    print cur_config
+    
+    new_config = self.project_z_val_manip(cur_config, self.z_val_orig)
+    
     return None
 
+  #######################################################
+  # check random target is align with the constraint of that z value
+  #######################################################
+  def compare_target_z_val(self, target, z_val):
+    
+    # get the current end-effector's transformation
+    with self.env:
+      self.robot.SetActiveDOFValues(target)
+      cur_transform = self.manip.GetTransform()
+    
+    # get current configuration's z height
+    cur_z_val = self.manip.GetTransform()[2,3] # take z value from transform
+    
+    # get the new end-effector's transformation to be in the target z_val
+    # find difference between current and target height
+    diff_z_val = z_val - cur_z_val
+    if self.prev_target_diff_z_val == diff_z_val:
+      self.count_target_diff_z_val += 1
+      if self.count_target_diff_z_val > 5:
+        print "Stuck at the same target"
+        self.count_target_diff_z_val = 0
+        self.prev_target_diff_z_val = 0
+        return True
+    self.prev_target_diff_z_val = diff_z_val
+    #print "target diff z_val %s" %diff_z_val
+    
+    return False
 
   #TODO
   #######################################################
   # projects onto the constraint of that z value
   #######################################################
   def project_z_val_manip(self, c, z_val):
-    return None
+    # test
+    #z_val = 0.6
+    #time.sleep(15)
+    
+    # set the arm to input configuration
+    with self.env:
+      self.robot.SetActiveDOFValues(c)
+    
+    # update current joint information
+    q = self.robot.GetActiveDOFValues()
+    
+    # update current height
+    Z_des = z_val
+    
+    # set small time step
+    delta_t = 0.02
+    
+    # set iteration counter 0
+    itr_cnt = 0 
+    while 1 :
+      # count iteration
+      itr_cnt += 1
+      
+      # calculate Z_cur
+      Z_cur = self.manip.GetTransform()[2,3] # take z value from transform
+      #print "Z_des %s Z_cur %s, Z_cur-Z_des %s" %(Z_des, Z_cur, np.abs(Z_cur-Z_des))
+            
+      # calculate dZ_cur/dq = Jxq
+      #################################################################
+      # calculate Jacobian
+      # Compute Jacobian
+      j_spatial = self.manip.CalculateJacobian()
+      
+      # consider only dZ_cur/dq
+      dZ_cur = j_spatial[2]
+      #################################################################
+       
+      # calculate gradient
+      # df/dq = 2x(Z_cur - Z_des)xdZ_cur/dq
+      df = 2*(Z_cur-Z_des)*dZ_cur
+      #print "df %s" %df
+      
+      # calculate next q
+      # q = q - df/dq x delta_t
+      q = q - df*delta_t
+      
+      # check collision
+      if self.checkForCollisions(q) :
+        return None
+      
+      # set new configuration
+      #with self.env:
+      #  self.robot.SetActiveDOFValues(q)
+      
+      # check if gradient is zero
+      # if q is zero is done
+      if np.linalg.norm(df) < 0.02 :
+        #print "projection is done %s" %itr_cnt
+        #print "Z_des %s Z_cur %s, Z_cur-Z_des %s" %(Z_des, Z_cur, np.abs(Z_cur-Z_des))
+        return q
   
+  # Initialze 
+  def jacobian_init(self):
+    # Store the joint limits for collision checking
+    self.limits = self.robot.GetActiveDOFLimits()
+    self.lowLimit = self.limits[0]
+    self.upLimit = self.limits[1]    
+    # Find DOFs for computing collision
+    self.activeDOFs = self.robot.GetActiveDOFIndices()
+  
+  # Check collision
+  def checkForCollisions(self, config):
+    with self.env:
+      self.robot.SetActiveDOFValues(config)
+    if min(self.lowLimit[x] <= config[x] for x in range(len(config))): # Check if joint within lower limits
+      if min(self.upLimit[x] >= config[x] for x in range(len(config))): # Check if joint within upper limits
+        if not self.robot.CheckSelfCollision():  # Check for self collision
+          if not self.env.CheckCollision(self.robot):  # Check for collision with environment
+            return False
+    return True
 
   #######################################################
   # RRT
@@ -281,6 +400,12 @@ class RoboHandler:
 
     # start the timer
     start = time.time()
+    
+    # get target height z value
+    self.z_val_orig = self.manip.GetTransform()[2,3] # take z value from transform
+    print "target z_val_orig = %s" %self.z_val_orig
+    self.count_target_diff_z_val = 0
+    self.prev_target_diff_z_val = 0
 
     # get initial state before any collision checking
     ini_state = self.robot.GetActiveDOFValues().tolist() # convert ini_state from numpy.ndarray to list
@@ -314,6 +439,7 @@ class RoboHandler:
 
       # extend one unit from the nearest state towards the target state
       [milestone, finish, collision] = self.unit_extend(nearest, target)
+      #print "1 collision %s" %collision
       if (finish == -1): continue # redundant arget
       if (collision == True): continue # extension causes collision
       parent_dict[tuple(milestone)] = nearest
@@ -341,6 +467,7 @@ class RoboHandler:
       while (finish != 1):
         # extend one unit towards target state
         [milestone, finish, collision] = self.unit_extend(nearest, target)
+        #print "2 collision %s" %collision
         if (collision == True): break
         parent_dict[tuple(milestone)] = nearest
         nearest = list(milestone)
@@ -406,6 +533,23 @@ class RoboHandler:
       elif (cmpresult < 0): milestone[i] -= MAX_MOVE_AMOUNT
       if finish == 1:
         if self.compare_value(milestone[i], target[i]) != 0: finish = 0 # set finish to 0 if at least one dimenstion of target not met
+    
+    # project extended configuration to constraint axis
+    # if the random target align with target constraint, ignore this target
+    
+    local_minima = self.compare_target_z_val(np.asarray(target), self.z_val_orig)
+    if local_minima == True:
+      finish = 1
+      collision = True
+      return [milestone, finish, collision]
+    # if the projected configuration is in collision, then return collision
+    new_milestone = self.project_z_val_manip(milestone, self.z_val_orig)
+    if new_milestone == None:
+      finish = 1
+      collision = True
+      return [milestone, finish, collision]
+    milestone = new_milestone.tolist()
+    
     # check collision
     [objcollision, selfcollision, not_used] = self.state_validation(milestone, True, False)
     collision = objcollision or selfcollision
@@ -631,5 +775,5 @@ class RoboHandler:
 
 if __name__ == '__main__':
   robo = RoboHandler()
-  #time.sleep(10000) #to keep the openrave window open
+  time.sleep(10000) #to keep the openrave window open
   
