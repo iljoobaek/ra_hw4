@@ -195,8 +195,8 @@ class RoboHandler:
       self.robot.SetActiveDOFValues([5.459, -0.981,  -1.113,  1.473 , -1.124, -1.332,  1.856])
 
     # get the trajectory!
-    #traj = self.birrt_to_goal(goals)
-    traj = self.rrt_to_goal(goals)
+    time.sleep(15)
+    traj = self.birrt_to_goal(goals)
 
     with self.env:
       self.robot.SetActiveDOFValues([5.459, -0.981,  -1.113,  1.473 , -1.124, -1.332,  1.856])
@@ -254,16 +254,6 @@ class RoboHandler:
   # RETURN: a trajectory to the goal
   #######################################################
   def birrt_to_goal(self, goals):
-    return None
-
-
-  #######################################################
-  # RRT
-  # find a path from the current configuration to ANY goal in goals
-  # goals: list of possible goal configurations
-  # RETURN: a trajectory to the goal
-  #######################################################
-  def rrt_to_goal(self, goals):
 
     # start the timer
     start = time.time()
@@ -384,6 +374,13 @@ class RoboHandler:
   # choose a target to expand
   # do not handle redundant targets
   def choose_target(self,goals):
+    candidate_target = []
+    for i in range(len(goals[0])):
+      tmp = np.random.uniform(self.ActiveDOF_Limits[0][i], self.ActiveDOF_Limits[1][i])
+      candidate_target.append(tmp)
+    return candidate_target
+  '''
+  def choose_target(self,goals):
     prob = np.random.uniform()
     # with probability 1-PROB_GOALS, choose a random target within dof limits
 
@@ -399,6 +396,7 @@ class RoboHandler:
       a=np.random.randint(0, len(goals), 1)
       print('index of goal',a) 
       return goals.tolist()[a] # using min-distance may end up stuck in local minima
+  '''
       
   # find the tree's nearest state to the target
   def find_nearest(self, parent_dict_keys, target):
