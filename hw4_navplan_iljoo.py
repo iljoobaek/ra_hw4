@@ -292,7 +292,6 @@ class RoboHandler:
     objTransForm = self.env.GetKinBody("target").GetTransform()
     self.sample_pose = np.copy(self.transform_to_params(self.env.GetKinBody("target").GetTransform()))
     robo_pose = np.array([0,0,0])
-    #robo_pose = np.copy(self.transform_to_params(self.start_trans))
     
     while 1 :
       # select a location along a line perpendicular to the close edge
@@ -304,55 +303,62 @@ class RoboHandler:
       #robo_pose = self.sample_pose - start_pose
       #print 'sample_pose, start_pose', self.sample_pose, start_pose
       #print 'robo_pose', robo_pose
-      time.sleep(1)
+      
+      # find relative transform between robot and target location
+      #print 'start_trans', self.start_trans
+      inv_start_trans = np.linalg.inv(self.start_trans)
+      #print 'inv start_trans', inv_start_trans
+      new_trans = np.dot(inv_start_trans, self.params_to_transform(self.sample_pose))
+      base_transform_goals = [np.copy(new_trans)]
       
       with self.env:
-        self.robot.SetTransform(np.dot(self.params_to_transform(self.sample_pose),self.params_to_transform(robo_pose)))
-      
+        self.robot.SetTransform(np.dot(self.start_trans, new_trans))
+        self.robot.SetActiveDOFValues(self.start_DOFS)
+        #self.robot.SetTransform(self.params_to_transform(self.sample_pose))
+        #self.robot.SetTransform(np.dot(self.params_to_transform(self.sample_pose),self.params_to_transform(robo_pose)))
+      time.sleep(2)
+            
       # check environment collision
       if self.env.CheckCollision(self.robot) == False:
-        print 'Not collision'
-        
-        
-        # check Birrt solution exist
-        # set target goal
-        target_goals = self.get_goal_dofs()
-        grasp_traj = run_func_with_timeout(self.birrt_to_goal, args=target_goals, timeout=10)
-        if grasp_traj != None :
-          print 'Found birrt solution'
-          with self.env:
-            self.robot.SetActiveDOFValues(self.start_DOFS)
-          #grasp_traj = self.points_to_traj(grasp_traj)
-          #self.robot.GetController().SetPath(grasp_traj)
-          #self.robot.WaitForController(0)
-          #self.taskmanip.CloseFingers()
-          time.sleep(10)
-          #with self.env:
-          #  self.robot.SetActiveDOFValues(self.start_DOFS)
-        else :
-          print 'No birrt solution'
-        
-        
-        '''
-        # check IK solution exist
-        print 'Find IK solution'
-        sol = self.get_goal_dofs()
-        print sol
-        #sol = self.manip.FindIKSolution(objTransForm, openravepy.IkFilterOptions.CheckEnvCollisions) # get collision-free solution
-        if sol != None :
-          print 'Found IK solution'
-        else :
-          print 'No IK soluion'
-        '''
-        
-      else :
-        print 'Env collsion'
-        
+        print 'No collision'
         
         # check A* path exist
+        with self.env:
+          self.robot.SetTransform(self.start_trans)
+          self.robot.SetActiveDOFValues(self.start_DOFS)
+        time.sleep(2)
+        base_transforms = run_func_with_timeout(self.astar_to_transform, args=base_transform_goals, timeout=10)
         
+        if base_transforms != None :
+          print 'Found nav path'
           
+          # check Birrt solution exist
+          with self.env:
+            self.robot.SetTransform(np.dot(self.start_trans, new_trans))
+            self.robot.SetActiveDOFValues(self.start_DOFS)
+          # set target goal
+          target_goals = self.get_goal_dofs()
+          grasp_traj = run_func_with_timeout(self.birrt_to_goal, args=target_goals, timeout=10)
+          if grasp_traj != None :
+            print 'Found birrt solution'
+            with self.env:
+              self.robot.SetActiveDOFValues(self.start_DOFS)
+            #grasp_traj = self.points_to_traj(grasp_traj)
+            #self.robot.GetController().SetPath(grasp_traj)
+            #self.robot.WaitForController(0)
+            #self.taskmanip.CloseFingers()
+            #time.sleep(10)
+            #with self.env:
+            #  self.robot.SetActiveDOFValues(self.start_DOFS)
             # find navigation path and arm movement path
+            
+            #return base_transforms, grasp_traj
+          else :
+            print 'No birrt solution'
+        else :
+          print 'No nav path'
+      else :
+        'Collision'
             
     # if fails, increase distance away from the close edge  
     
@@ -813,9 +819,7 @@ class RoboHandler:
   #######################################################
   def astar_to_transform(self, goal_transforms):
     # test for a star using HW2
-    self.search_to_goal_astar(goal_transforms)
-    return None
-  
+    return self.search_to_goal_astar(goal_transforms)  
  
     #self.robot.GetController().SetPath(traj)
     #self.robot.WaitForController(0)
@@ -877,8 +881,9 @@ class RoboHandler:
         print('success')
         now = time.time()
         print 'The time for the search to complete:', now - start
-        point=self.creat_traj_points(tuple(current),path)
-        return self.points_to_traj(point)
+        return 1
+        #point=self.creat_traj_points(tuple(current),path)
+        #return self.points_to_traj(point)
       
       if parent[1] not in vco:
         #print('being added to vco',parent[1])
@@ -959,7 +964,7 @@ class RoboHandler:
       #print ('goal[0:2]', goal[0:2])
       #print ('config[2]', config[2])
       #print ('goal[2]', goal[2])
-      print ('check done', np.linalg.norm(config[0:2]-goal[0:2]), np.abs(config[2] - goal[2]))
+      #print ('check done', np.linalg.norm(config[0:2]-goal[0:2]), np.abs(config[2] - goal[2]))
       if (np.linalg.norm(config[0:2]-goal[0:2]) <= dist_thresh and np.abs(config[2] - goal[2]) <= theta_thresh):
         return True
     return False
