@@ -167,27 +167,9 @@ class RoboHandler:
     print('goal param',x_trans,y_trans,th)
     #print('param to trans',self.params_to_transform(goal_trans[1]))
     #time.sleep(3)
-    '''
-    
-    th = -np.pi/2
-    x_trans = 0.5
-    y_trans = 3.0
-    goal_trans = [np.copy(self.start_trans)]
-    rot_to_goal = np.array([[np.cos(th), -np.sin(th), 0],
-                              [np.sin(th), np.cos(th), 0],
-                              [0, 0, 1]])
-    goal_trans[0][0:3,0:3] = np.dot(rot_to_goal, self.start_trans[0:3,0:3])
-    goal_trans[0][0,3] += x_trans
-    goal_trans[0][1,3] += y_trans
 
-    print('goal',goal_trans)
-    print self.transform_to_params(goal_trans[0])
-    
-    with self.env:
-      self.robot.SetTransform(self.start_trans)
       
     # test to see where the goals are
-    '''
     #print 'self.start_trans xythera', self.transform_to_params(self.start_trans)
     #time.sleep(10)
     #
@@ -201,7 +183,6 @@ class RoboHandler:
     #print 'goal[1] xythera', self.transform_to_params(goal_trans[1])
     #time.sleep(10)
     #return
-    
 
     # get the trajectory!
     base_transforms = self.astar_to_transform(goal_trans)
@@ -228,7 +209,7 @@ class RoboHandler:
       self.robot.SetTransform(self.start_trans)
       self.robot.SetActiveDOFValues(self.start_DOFS)
       
-    #time.sleep(50)
+    #time.sleep(10)
     
     base_transforms,arm_traj = self.nav_and_grasp()
 
@@ -309,14 +290,14 @@ class RoboHandler:
       inv_start_trans = np.linalg.inv(self.start_trans)
       #print 'inv start_trans', inv_start_trans
       new_trans = np.dot(inv_start_trans, self.params_to_transform(self.sample_pose))
-      base_transform_goals = [np.copy(new_trans)]
+      base_transform_goals = [np.copy(self.params_to_transform(self.sample_pose))]
       
       with self.env:
         self.robot.SetTransform(np.dot(self.start_trans, new_trans))
         self.robot.SetActiveDOFValues(self.start_DOFS)
         #self.robot.SetTransform(self.params_to_transform(self.sample_pose))
         #self.robot.SetTransform(np.dot(self.params_to_transform(self.sample_pose),self.params_to_transform(robo_pose)))
-      time.sleep(2)
+      time.sleep(1)
             
       # check environment collision
       if self.env.CheckCollision(self.robot) == False:
@@ -326,33 +307,43 @@ class RoboHandler:
         with self.env:
           self.robot.SetTransform(self.start_trans)
           self.robot.SetActiveDOFValues(self.start_DOFS)
-        time.sleep(2)
+        time.sleep(1)
         base_transforms = run_func_with_timeout(self.astar_to_transform, args=base_transform_goals, timeout=10)
         
         if base_transforms != None :
           print 'Found nav path'
           
-          # check Birrt solution exist
+          '''
+          # to see if the robot really moves the the position
           with self.env:
             self.robot.SetTransform(np.dot(self.start_trans, new_trans))
+            self.robot.SetActiveDOFValues(self.start_DOFS)
+          self.run_basetranforms(base_transforms)
+          time.sleep(50)
+          '''
+          
+          # check Birrt solution exist
+          # set robot to the last position of the found path before searching
+          with self.env:
+            self.robot.SetTransform(base_transforms[self.cnt-1])
             self.robot.SetActiveDOFValues(self.start_DOFS)
           # set target goal
           target_goals = self.get_goal_dofs()
           grasp_traj = run_func_with_timeout(self.birrt_to_goal, args=target_goals, timeout=10)
           if grasp_traj != None :
             print 'Found birrt solution'
+            grasp_traj = self.points_to_traj(grasp_traj)
+            '''
+            # test to see if robot can really grasp the target
             with self.env:
               self.robot.SetActiveDOFValues(self.start_DOFS)
-            #grasp_traj = self.points_to_traj(grasp_traj)
-            #self.robot.GetController().SetPath(grasp_traj)
-            #self.robot.WaitForController(0)
-            #self.taskmanip.CloseFingers()
-            #time.sleep(10)
-            #with self.env:
-            #  self.robot.SetActiveDOFValues(self.start_DOFS)
-            # find navigation path and arm movement path
+            self.robot.GetController().SetPath(grasp_traj)
+            self.robot.WaitForController(0)
+            self.taskmanip.CloseFingers()
+            time.sleep(50)
+            '''
             
-            #return base_transforms, grasp_traj
+            return base_transforms, grasp_traj
           else :
             print 'No birrt solution'
         else :
@@ -819,11 +810,9 @@ class RoboHandler:
   #######################################################
   def astar_to_transform(self, goal_transforms):
     # test for a star using HW2
-    return self.search_to_goal_astar(goal_transforms)  
- 
-    #self.robot.GetController().SetPath(traj)
-    #self.robot.WaitForController(0)
-    #self.taskmanip.CloseFingers()
+    base_trans=self.search_to_goal_astar(goal_transforms)
+    return base_trans
+  
   
   #######################################################
   # A* SEARCH
@@ -853,8 +842,9 @@ class RoboHandler:
     #g_score=dict()
     Q = Queue.PriorityQueue() #openset
     path = dict()
+    path_ind = dict()
     ini_c=self.config_to_priorityqueue_tuple(0,self.convert_for_dict_withround(initial),goal)
-    print('ini_c', ini_c)
+    #print('ini_c', ini_c)
     Q.put(ini_c)
     f_score[ini_c[1]]=ini_c[0]
     
@@ -879,11 +869,11 @@ class RoboHandler:
       
       if parent[1] in goal or self.is_at_goal_basesearch(self.convert_from_dictkey_withround(parent[1]), goal):
         print('success')
-        now = time.time()
-        print 'The time for the search to complete:', now - start
-        return 1
-        #point=self.creat_traj_points(tuple(current),path)
-        #return self.points_to_traj(point)
+
+        base=self.creat_traj_base(parent[1],path)
+        base_trans=self.creat_transform(base,path_ind)
+
+        return base_trans
       
       if parent[1] not in vco:
         #print('being added to vco',parent[1])
@@ -895,25 +885,18 @@ class RoboHandler:
         #print('action size',action_size)
         for neig_trans in range(action_size[0]):
           #print('in neighbour trans',action[neig_trans])
-               
-
-          with self.env:
-            #self.robot.SetTransform(self.params_to_transform(current))
-            #time.sleep(2)
-            
-            self.robot.SetTransform(action[neig_trans])
-            #time.sleep(2)
             
           neighbor=self.transform_to_params(action[neig_trans])
           #print('neighbor',neighbor)
           #time.sleep(5)
           #print('in neighbour config',neighbor)
           
-          #with self.env:
-          #  self.robot.SetActiveDOFValues(neighbor)
-          #  if (self.env.CheckCollision(self.robot) or self.robot.CheckSelfCollision() or self.check_dof_limits(neighbor)):
-          #    continueself.convert_for_dict_withround(c
-          #print('testing visted chk 1234345u85984375876805685463056',self.convert_for_dict_withround(neighbor),vco)
+          with self.env:
+            self.robot.SetTransform(action[neig_trans])
+            if (self.env.CheckCollision(self.robot) or self.robot.CheckSelfCollision()):
+              #print 'astar collision'
+              continue
+            
           if self.convert_for_dict_withround(neighbor) not in vco:
             #print('self.convert_for_dict_withround(neighbor) not in vco')
             #temp=self.config_to_priorityqueue_tuple(g_score+self.dist_to_goal(parent[1],self.convert_for_dict_withround(neighbor)),self.convert_for_dict_withround(neighbor),goal)
@@ -923,7 +906,10 @@ class RoboHandler:
             #time.sleep(5)
             if self.convert_for_dict_withround(neighbor) not in f_score.keys() or f_score[self.convert_for_dict_withround(neighbor)] > temp[0]:
               f_score[self.convert_for_dict_withround(neighbor)] = temp[0]
-              path[tuple(neighbor)] = tuple(current)
+              #print 'nei',tuple(neighbor),'curr',tuple(current)
+              path[temp[1]] = self.convert_for_dict_withround(current)
+
+              path_ind[temp[1]] = neig_trans
     
     print('failure')      
     return
@@ -941,17 +927,39 @@ class RoboHandler:
     return flag
   
   
-  def creat_traj_points(self, child,dictin):
-    point=[]
+  def creat_traj_base(self, child,dictin):
+    #print 'child', child
+    base=[]
     i=0
-    point.append(child)
-    while dictin.get(point[i],'none')  != 'none':
-      point.append(dictin[point[i]])
-      i=i+1
-    point=point[::-1]
-    return point
+    base.append(child)
+    #print 'base',base
+    #print 'dict', dictin[base[i]]
 
-  #######################################################
+    while dictin.get(base[i],'none') !='none':
+      #print('base',base[i])
+      base.append(dictin[base[i]])
+      i=i+1
+      
+    base=base[::-1]
+    return base
+  
+  def creat_transform(self, base,path_ind):
+    base_transform=[np.copy(self.start_trans)]
+    base_transform[0][0:4,0:4]=self.start_trans
+    cnt=1
+    #print 'base',base[i]
+    for i in range (1,len(base)):
+      
+      index=path_ind[base[i]]
+
+      for i in range (0,5):
+        base_transform.append(np.copy(self.start_trans))
+        base_transform[cnt][0:4,0:4]=np.dot(base_transform[cnt-1],self.full_transforms[index])
+
+        cnt=cnt+1
+    self.cnt=cnt-1
+    return base_transform
+   #######################################################
   # Check if the config is close enough to goal
   # Returns true if any goal in goals is within
   # BOTH distance_thresh and theta_thresh
@@ -989,89 +997,100 @@ class RoboHandler:
     # get initial x, y, thera
     # x: param[0], y: param[1], thera: param[2]
     cur_param = self.transform_to_params(self.start_trans)
-    
-    
-    '''
-    th = 0 #-np.pi/2
-    x_trans = 0.1
-    y_trans = 0.0
-    trans = np.array([[np.cos(th), -np.sin(th), 0, x_trans],
-                              [np.sin(th), np.cos(th), 0, y_trans],
-                              [0, 0, 1, 0],
-                              [0, 0, 0, 1]])
-    self.transition_transforms[self.count][0:4,0:4]=trans
-    self.count=self.count+1
-    print trans
-    
-    th = -np.pi/4
-    x_trans = 0.1
-    y_trans = 0.0
-    trans = np.array([[np.cos(th), -np.sin(th), 0, x_trans],
-                              [np.sin(th), np.cos(th), 0, y_trans],
-                              [0, 0, 1, 0],
-                              [0, 0, 0, 1]])
-    self.transition_transforms.append(np.copy(self.start_trans))
-    self.transition_transforms[self.count][0:4,0:4]=trans
-    self.count=self.count+1
-    print trans
-
-    th = np.pi/4
-    x_trans = 0.1
-    y_trans = 0.0
-    trans = np.array([[np.cos(th), -np.sin(th), 0, x_trans],
-                              [np.sin(th), np.cos(th), 0, y_trans],
-                              [0, 0, 1, 0],
-                              [0, 0, 0, 1]])
-    self.transition_transforms.append(np.copy(self.start_trans))
-    self.transition_transforms[self.count][0:4,0:4]=trans
-    print trans
-    '''
 
     self.count=0
 
     w_1 = 1
     w_2 = 1    
     new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
-    print 'new param' ,new_param
+    #print 'new param' ,new_param
     self.transition_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
-    print(self.transition_transforms [self.count])
+    #print(self.transition_transforms [self.count])
+   
 
+    #
     self.count=self.count+1
     w_1 = 0
     w_2 = 1  
     new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
-    print 'new param' ,new_param
+    #print 'new param' ,new_param
     self.transition_transforms.append(np.copy(self.start_trans))
     self.transition_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
-    print(self.transition_transforms [self.count])
+    #print(self.transition_transforms [self.count])
     
     self.count=self.count+1
     w_1 = 1
     w_2 = 0  
     new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
-    print 'new param' ,new_param
+    #print 'new param' ,new_param
     self.transition_transforms.append(np.copy(self.start_trans))
     self.transition_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
-    print(self.transition_transforms [self.count])
+    #print(self.transition_transforms [self.count])
     
     self.count=self.count+1       
     w_1 = 1
     w_2 = -1
     new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
-    print 'new param' ,new_param
+    #print 'new param' ,new_param
     self.transition_transforms.append(np.copy(self.start_trans))
     self.transition_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
-    print(self.transition_transforms [self.count])
+    #print(self.transition_transforms [self.count])
     
     self.count=self.count+1
     w_1 = -1
     w_2 = 1    
     new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
-    print 'new param' ,new_param
+    #print 'new param' ,new_param
     self.transition_transforms.append(np.copy(self.start_trans))
     self.transition_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
-    print(self.transition_transforms [self.count])
+    #print(self.transition_transforms [self.count])
     
+    self.count=0
+    TIMESTEP=0.2
+
+    w_1 = 1
+    w_2 = 1    
+    new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
+    #print 'new param' ,new_param
+    self.full_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
+    #print(self.full_transforms [self.count])
+   
+
+    #
+    self.count=self.count+1
+    w_1 = 0
+    w_2 = 1  
+    new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
+    #print 'new param' ,new_param
+    self.full_transforms.append(np.copy(self.start_trans))
+    self.full_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
+    #print(self.full_transforms [self.count])
+    
+    self.count=self.count+1
+    w_1 = 1
+    w_2 = 0  
+    new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
+    #print 'new param' ,new_param
+    self.full_transforms.append(np.copy(self.start_trans))
+    self.full_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
+    #print(self.full_transforms [self.count])
+    
+    self.count=self.count+1       
+    w_1 = 1
+    w_2 = -1
+    new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
+    #print 'new param' ,new_param
+    self.full_transforms.append(np.copy(self.start_trans))
+    self.full_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
+
+    
+    self.count=self.count+1
+    w_1 = -1
+    w_2 = 1    
+    new_param = self.get_xythera_from_angularvel(w_1, w_2, TIMESTEP, cur_param)
+    self.full_transforms.append(np.copy(self.start_trans))
+    self.full_transforms [self.count][0:4,0:4]=self.params_to_transform(new_param)
+
     
     # test to see how the action set move  
     #time.sleep(5)
@@ -1106,7 +1125,15 @@ class RoboHandler:
   # Applies the specified controls to the initial transform
   # returns a list of all intermediate transforms
   #######################################################
-  def controls_to_transforms(self,trans,controls,timestep_amount):
+  def controls_to_transforms(self,w_1,w_2,time_step):
+    thera_t = (WHEEL_RADIUS/(2*ROBOT_LENGTH))*(w_1-w_2)*time_step
+    #+ prev_param[2]
+    #thera_t = prev_param[2]-thera_t
+    y_t = (WHEEL_RADIUS/2)*(w_1*np.sin(thera_t)+w_2*np.sin(thera_t))*time_step
+    #+ prev_param[0]
+    x_t = (WHEEL_RADIUS/2)*(w_1*np.cos(thera_t)+w_2*np.cos(thera_t))*time_step
+    #+ prev_param[1]
+    return np.array([x_t, y_t, thera_t])
     return None
   
   
@@ -1218,10 +1245,13 @@ class RoboHandler:
 
 
   def run_basetranforms(self, transforms):
-    for trans in transforms:
+    for trans in range(0,self.cnt):
+      #print trans,self.cnt
+      #print transforms[trans]
       with self.env:
-        self.robot.SetTransform(trans)
-      time.sleep(0.01)
+        self.robot.SetTransform(transforms[trans])
+      time.sleep(0.1)
+      #print 'basetransform', trans
 
 
   #######################################################
@@ -1318,6 +1348,6 @@ def run_func_with_timeout(func, args = (), timeout=1000000000):
 
 if __name__ == '__main__':
   robo = RoboHandler()
-  #time.sleep(10000) #to keep the openrave window open
+  time.sleep(10000) #to keep the openrave window open
   
 
